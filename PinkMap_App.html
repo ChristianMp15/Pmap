@@ -27,6 +27,31 @@ button:hover{background:#2c4166}
 .slow{background:#f3d9dd;color:#8a3b4a}
 .fast{background:#d9ebe0;color:#2f6b45}
 .small{font-size:13px;color:var(--grey);margin-top:6px}
+.combo{position:relative}
+.combo input{padding-right:40px}
+.combo .arrow{position:absolute;top:0;right:0;width:38px;height:100%;margin:0;padding:0;background:transparent;color:var(--navy);border-radius:0 8px 8px 0;font-size:12px}
+.combo .arrow:hover{background:#eceae4}
+.combo .list{position:absolute;z-index:30;left:0;right:0;top:calc(100% + 4px);max-height:280px;overflow-y:auto;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 6px 18px #1f2f4d26}
+.combo .list[hidden]{display:none}
+.opt{padding:8px 10px;font-size:14px;cursor:pointer;display:flex;justify-content:space-between;gap:8px}
+.opt small{color:var(--grey);font-size:11px;white-space:nowrap}
+.opt.active,.opt:hover{background:#f3e9eb}
+.opt.geo{color:#8a3b4a;font-weight:600}
+.hdr{padding:6px 10px;font-size:11px;font-weight:700;color:var(--grey);text-transform:uppercase;letter-spacing:.04em;background:#faf9f6;position:sticky;top:0}
+.note{padding:8px 10px;font-size:12px;color:var(--grey)}
+.live{margin-top:10px;padding:8px 10px;border-radius:8px;background:#d9ebe0;color:#2f6b45;font-size:13px}
+.live[hidden]{display:none}
+hr{border:none;border-top:1px solid var(--line);margin:18px 0 4px}
+h2{font-size:16px;margin:14px 0 2px}
+input[type=text]{width:100%;padding:10px;font-size:15px;border-radius:8px;border:1px solid var(--line);background:#fff;color:var(--navy)}
+button.secondary{background:#fff;color:var(--navy);border:1px solid var(--navy);margin-top:8px}
+button.secondary:hover{background:#eceae4}
+.row{display:flex;gap:8px;align-items:center}
+.row button{width:auto;margin:0;padding:6px 10px;font-size:13px}
+.hit{border:1px solid var(--line);background:#fff;border-radius:8px;padding:8px 10px;margin-top:6px;font-size:13px;cursor:pointer}
+.hit:hover{border-color:var(--rose)}
+.saved{display:flex;justify-content:space-between;gap:8px;align-items:center;border:1px solid var(--line);background:#fff;border-radius:8px;padding:8px 10px;margin-top:6px;font-size:13px}
+.saved button{background:#f3d9dd;color:#8a3b4a;width:auto;margin:0;padding:4px 10px;font-size:12px}
 @media(max-width:700px){body{flex-direction:column-reverse}#panel{width:100%;height:50%}#map{height:50%;flex:none}}
 </style>
 </head>
@@ -34,11 +59,28 @@ button:hover{background:#2c4166}
 <div id="panel">
   <h1><span class="pink">Pink</span>Map</h1>
   <p class="sub">Find the calmer way to drive across Houston.</p>
-  <label for="from">From</label><select id="from"></select>
-  <label for="to">To</label><select id="to"></select>
+  <label for="fromInput">From</label>
+  <div class="combo" id="fromCombo"><input type="text" id="fromInput" placeholder="Starting point, e.g. Hermann Park" autocomplete="off"><button type="button" class="arrow" aria-label="Show full list">&#9660;</button><div class="list" hidden></div></div>
+  <label for="toInput">To</label>
+  <div class="combo" id="toCombo"><input type="text" id="toInput" placeholder="Destination, e.g. Rice University" autocomplete="off"><button type="button" class="arrow" aria-label="Show full list">&#9660;</button><div class="list" hidden></div></div>
+  <div class="small" id="placeCount"></div>
   <button id="go">Show routes</button>
   <div id="msg"></div>
+  <div id="liveBox" class="live" hidden></div>
   <div id="results"></div>
+
+  <hr>
+  <h2>Add your own address</h2>
+  <p class="small">Search for an address or place in the Houston area, then save it so it shows up in the From / To lists.</p>
+  <label for="addrQuery">Address</label>
+  <input type="text" id="addrQuery" placeholder="e.g. 1301 Fannin St, Houston">
+  <label for="addrLabel">Name for it (optional)</label>
+  <input type="text" id="addrLabel" maxlength="60" placeholder="e.g. Study spot">
+  <button id="addrSearch" class="secondary">Search address</button>
+  <div id="addrMsg" class="small"></div>
+  <div id="addrHits"></div>
+  <h2>Saved addresses</h2>
+  <div id="savedList"></div>
 </div>
 <div id="map"></div>
 
@@ -57,14 +99,300 @@ const map = new mapboxgl.Map({
 });
 map.addControl(new mapboxgl.NavigationControl());
 
-const fromSel = document.getElementById("from");
-const toSel = document.getElementById("to");
-PLACES.forEach((p, i) => {
-  fromSel.add(new Option(p[1], i));
-  toSel.add(new Option(p[1], i));
+// ---------- Live location (the blue dot) ----------
+// The location stays in this browser. It is not saved anywhere and is not sent to our database.
+const geolocate = new mapboxgl.GeolocateControl({
+  positionOptions: { enableHighAccuracy: true },
+  trackUserLocation: true,   // keeps following you as you move
+  showUserHeading: true,     // arrow shows which way you are heading
+  showAccuracyCircle: true
 });
-fromSel.value = 0;
-toSel.value = 1;
+map.addControl(geolocate, "top-right");
+
+let wakeLock = null;
+const liveBox = document.getElementById("liveBox");
+geolocate.on("trackuserlocationstart", async () => {
+  liveBox.hidden = false; liveBox.textContent = "Finding your location...";
+  try { if (navigator.wakeLock) wakeLock = await navigator.wakeLock.request("screen"); } catch (e) { /* screen may still sleep */ }
+});
+geolocate.on("geolocate", e => {
+  const mph = e.coords.speed != null ? Math.round(e.coords.speed * 2.23694) : null;
+  liveBox.textContent = "Tracking your location" + (mph !== null ? " - " + mph + " mph" : "") +
+    " (accuracy about " + Math.round(e.coords.accuracy * 3.28084) + " ft)";
+});
+geolocate.on("trackuserlocationend", () => {
+  liveBox.hidden = true;
+  if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+});
+geolocate.on("error", e => {
+  liveBox.hidden = false;
+  liveBox.textContent = "Could not get your location: " + (e.message || "permission denied") + ". Check the location permission for this site.";
+});
+
+// ---------- Place list: built-in places + places.json (made by build_places.py) + saved addresses ----------
+let basePlaces = PLACES.slice();  // [id, name, lat, lon, kind]
+
+// ---------- Saved addresses (browser storage + optional database) ----------
+// If you deploy the backend (backend/main.py), put its web address here, e.g. "https://pinkmap-api.onrender.com".
+// Leave it empty to keep addresses only in this browser.
+const API_URL = "";
+const STORE_KEY = "pinkmap_saved";
+const DEVICE_KEY = "pinkmap_device_id";
+
+// Anonymous id for this browser, so each person only sees their own saved addresses.
+let deviceId = localStorage.getItem(DEVICE_KEY);
+if (!deviceId) {
+  deviceId = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2));
+  localStorage.setItem(DEVICE_KEY, deviceId);
+}
+
+let saved = [];   // [{id, label, address, lat, lon}]
+const ME = ["me", "My current location", null, null, "gps"]; // coordinates are filled in when picked
+let allPlaces = []; // saved addresses first, then every built-in place (same shape as PLACES)
+
+function readLocal() {
+  try { return JSON.parse(localStorage.getItem(STORE_KEY)) || []; } catch (e) { return []; }
+}
+function writeLocal() { localStorage.setItem(STORE_KEY, JSON.stringify(saved)); }
+
+async function api(path, options = {}) {
+  const res = await fetch(API_URL + path, {
+    ...options,
+    headers: { "Content-Type": "application/json", "X-Device-Id": deviceId }
+  });
+  if (!res.ok) throw new Error("Server said " + res.status);
+  return res.status === 204 ? null : res.json();
+}
+
+function refreshPlaces() {
+  allPlaces = [ME].concat(saved.map(a => ["s" + a.id, a.label || a.address, a.lat, a.lon, "saved"]), basePlaces);
+  [fromCombo, toCombo].forEach(c => {
+    if (!c.place || c.place[0] === "me") return;
+    const fresh = allPlaces.find(p => p[0] === c.place[0]);
+    if (fresh) c.set(fresh);
+    else if (!String(c.place[0]).startsWith("g")) c.set(null); // a saved address that was deleted
+  });
+  document.getElementById("placeCount").textContent =
+    (allPlaces.length - 1) + " places available. Start typing to search, or tap the arrow to browse the list.";
+}
+
+async function loadBasePlaces() {
+  let extra = [];
+  if (API_URL) {                       // first choice: the database
+    try { extra = await api("/places"); } catch (e) { extra = []; }
+  }
+  if (!extra.length) {                 // otherwise the places.json file next to this page
+    try { const res = await fetch("places.json"); if (res.ok) extra = await res.json(); } catch (e) { /* the built-in list still works */ }
+  }
+  const have = new Set(PLACES.map(p => p[1].toLowerCase()));
+  extra.forEach(p => { if (!have.has(p[1].toLowerCase())) basePlaces.push(p); });
+  basePlaces.sort((x, y) => x[1].localeCompare(y[1]));
+  refreshPlaces();
+}
+
+// ---------- Search-as-you-type box with a drop-down list ----------
+function matchPlaces(q) {
+  const toks = q.toLowerCase().split(/\s+/).filter(Boolean);
+  const scored = [];
+  allPlaces.forEach(p => {
+    const n = p[1].toLowerCase();
+    if (!toks.every(t => n.includes(t))) return;
+    scored.push([n.startsWith(toks[0]) ? 0 : n.includes(" " + toks[0]) ? 1 : 2, p]); // best matches first
+  });
+  scored.sort((x, y) => x[0] - y[0] || x[1][1].localeCompare(y[1][1]));
+  return scored.map(x => x[1]);
+}
+
+function makeCombo(rootId) {
+  const root = document.getElementById(rootId);
+  const input = root.querySelector("input"), arrow = root.querySelector(".arrow"), list = root.querySelector(".list");
+  const combo = { place: null };
+  let rows = [], active = -1, showAll = false, geoMode = false;
+
+  combo.set = p => { combo.place = p; input.value = p ? p[1] : ""; };
+
+  function close() { list.hidden = true; active = -1; geoMode = false; }
+  function choose(p) {
+    close();
+    if (p[0] !== "me") { combo.set(p); return; }
+    input.value = "Finding your location...";   // ask the phone / browser for the GPS position
+    if (!navigator.geolocation) { combo.set(null); document.getElementById("msg").textContent = "This browser cannot share your location."; return; }
+    navigator.geolocation.getCurrentPosition(
+      pos => combo.set(["me", "My current location", pos.coords.latitude, pos.coords.longitude, "gps"]),
+      err => { combo.set(null); document.getElementById("msg").textContent = "Could not get your location: " + err.message; },
+      { enableHighAccuracy: true, timeout: 10000 });
+  }
+
+  function addOpt(p, cls) {
+    const d = document.createElement("div");
+    d.className = "opt" + (cls ? " " + cls : "");
+    const name = document.createElement("span"); name.textContent = p[1];
+    d.appendChild(name);
+    if (p[4] && p[4] !== "saved") { const k = document.createElement("small"); k.textContent = p[4].replace("_", " "); d.appendChild(k); }
+    d.onmousedown = e => { e.preventDefault(); choose(p); };
+    list.appendChild(d); rows.push(d); d._place = p;
+  }
+  function addNote(text) { const d = document.createElement("div"); d.className = "note"; d.textContent = text; list.appendChild(d); }
+  function addHdr(text) { const d = document.createElement("div"); d.className = "hdr"; d.textContent = text; list.appendChild(d); }
+
+  function render() {
+    list.innerHTML = ""; rows = []; active = -1;
+    const q = input.value.trim();
+    if (!q || showAll) {                       // full list: saved addresses first, then everything A-Z
+      const mine = allPlaces.filter(p => p[4] === "saved"), rest = allPlaces.filter(p => p[4] !== "saved" && p[0] !== "me");
+      addHdr("Use GPS"); addOpt(ME);
+      if (mine.length) { addHdr("My saved addresses"); mine.forEach(p => addOpt(p)); }
+      addHdr("All places (A-Z)"); rest.forEach(p => addOpt(p));
+    } else {
+      const hits = matchPlaces(q);
+      hits.slice(0, 50).forEach(p => addOpt(p));
+      if (!hits.length) addNote("No place in the list matches.");
+      else if (hits.length > 50) addNote("Showing 50 of " + hits.length + ". Keep typing to narrow it down.");
+      if (q.length >= 3) {                      // not in the list? look it up as a street address
+        const g = document.createElement("div");
+        g.className = "opt geo"; g.textContent = "Search \"" + q + "\" as an address";
+        g.onmousedown = e => { e.preventDefault(); geoSearch(q); };
+        list.appendChild(g);
+      }
+    }
+    list.hidden = false;
+  }
+
+  async function geoSearch(q) {
+    list.innerHTML = ""; rows = []; geoMode = true; addNote("Searching...");
+    const url = "https://api.mapbox.com/geocoding/v5/mapbox.places/" + encodeURIComponent(q) + ".json" +
+      "?limit=5&country=us&bbox=-96.2,29.3,-94.8,30.3&proximity=-95.37,29.76&access_token=" + mapboxgl.accessToken;
+    try {
+      const data = await (await fetch(url)).json();
+      list.innerHTML = ""; rows = [];
+      if (!data.features || !data.features.length) { addNote("No address found in the Houston area."); return; }
+      data.features.forEach(f => addOpt(["g" + Date.now() + Math.random().toString(16).slice(2, 6), f.place_name, f.center[1], f.center[0], "address"]));
+    } catch (e) { list.innerHTML = ""; addNote("Search failed: " + e.message); }
+  }
+
+  function move(step) {
+    if (!rows.length) return;
+    if (active >= 0) rows[active].classList.remove("active");
+    active = (active + step + rows.length) % rows.length;
+    rows[active].classList.add("active");
+    rows[active].scrollIntoView({ block: "nearest" });
+  }
+
+  input.addEventListener("focus", () => input.select());
+  input.addEventListener("input", () => { combo.place = null; showAll = false; render(); });
+  input.addEventListener("keydown", e => {
+    if (e.key === "ArrowDown") { e.preventDefault(); if (list.hidden) render(); move(1); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); move(-1); }
+    else if (e.key === "Escape") close();
+    else if (e.key === "Enter") {
+      e.preventDefault();
+      const pick = rows[active >= 0 ? active : 0];
+      if (pick && pick._place) choose(pick._place);
+    }
+  });
+  input.addEventListener("blur", () => {
+    close();
+    if (!combo.place) {                         // typed the exact name but never clicked: still count it
+      const exact = allPlaces.find(p => p[0] !== "me" && p[1].toLowerCase() === input.value.trim().toLowerCase());
+      if (exact) combo.set(exact);
+    }
+  });
+  arrow.addEventListener("mousedown", e => {
+    e.preventDefault();
+    if (!list.hidden) { close(); return; }
+    showAll = true; render(); input.focus();
+    const sel = combo.place ? rows.findIndex(r => r._place[0] === combo.place[0]) : -1;
+    if (sel >= 0) { active = sel; rows[sel].classList.add("active"); rows[sel].scrollIntoView({ block: "center" }); }
+  });
+  return combo;
+}
+
+const fromCombo = makeCombo("fromCombo");
+const toCombo = makeCombo("toCombo");
+
+function renderSaved() {
+  const box = document.getElementById("savedList");
+  box.innerHTML = "";
+  if (!saved.length) { box.innerHTML = '<div class="small">Nothing saved yet.</div>'; return; }
+  saved.forEach(a => {
+    const row = document.createElement("div");
+    row.className = "saved";
+    const text = document.createElement("span");
+    text.textContent = a.label ? a.label + " - " + a.address : a.address; // textContent keeps typed text safe
+    const del = document.createElement("button");
+    del.textContent = "Delete";
+    del.onclick = () => removeAddress(a.id);
+    row.append(text, del);
+    box.appendChild(row);
+  });
+}
+
+function refreshAddressUI() { refreshPlaces(); renderSaved(); }
+
+async function loadSaved() {
+  saved = readLocal();
+  if (API_URL) {
+    try { saved = await api("/addresses"); writeLocal(); }
+    catch (e) { document.getElementById("addrMsg").textContent = "Could not reach the database, showing addresses saved in this browser."; }
+  }
+  refreshAddressUI();
+}
+
+async function saveAddress(hit) {
+  const label = document.getElementById("addrLabel").value.trim();
+  const item = { label: label, address: hit.place_name, lat: hit.center[1], lon: hit.center[0] };
+  if (saved.some(a => Math.abs(a.lat - item.lat) < 1e-5 && Math.abs(a.lon - item.lon) < 1e-5)) {
+    document.getElementById("addrMsg").textContent = "That address is already saved."; return;
+  }
+  try {
+    item.id = API_URL ? (await api("/addresses", { method: "POST", body: JSON.stringify(item) })).id
+                      : "L" + Date.now();
+  } catch (e) {
+    item.id = "L" + Date.now(); // saved only in this browser because the server did not answer
+    document.getElementById("addrMsg").textContent = "Saved in this browser only (database not reachable).";
+  }
+  saved.push(item); writeLocal(); refreshAddressUI();
+  document.getElementById("addrHits").innerHTML = "";
+  document.getElementById("addrQuery").value = "";
+  document.getElementById("addrLabel").value = "";
+  if (!document.getElementById("addrMsg").textContent.startsWith("Saved in")) document.getElementById("addrMsg").textContent = "Saved.";
+}
+
+async function removeAddress(id) {
+  if (API_URL && !String(id).startsWith("L")) {
+    try { await api("/addresses/" + id, { method: "DELETE" }); } catch (e) { /* removed locally anyway */ }
+  }
+  saved = saved.filter(a => a.id !== id); writeLocal(); refreshAddressUI();
+}
+
+async function searchAddress() {
+  const q = document.getElementById("addrQuery").value.trim();
+  const msg = document.getElementById("addrMsg"), hits = document.getElementById("addrHits");
+  hits.innerHTML = "";
+  if (q.length < 3) { msg.textContent = "Type at least 3 characters."; return; }
+  msg.textContent = "Searching...";
+  // bbox keeps results inside the greater Houston area; proximity ranks nearby matches first
+  const url = "https://api.mapbox.com/geocoding/v5/mapbox.places/" + encodeURIComponent(q) + ".json" +
+    "?limit=5&country=us&bbox=-96.2,29.3,-94.8,30.3&proximity=-95.37,29.76&access_token=" + mapboxgl.accessToken;
+  try {
+    const res = await fetch(url);
+    const data = await res.json();
+    if (!data.features || !data.features.length) { msg.textContent = "No match in the Houston area. Try adding the street number or zip code."; return; }
+    msg.textContent = "Click the right one to save it:";
+    data.features.forEach(f => {
+      const d = document.createElement("div");
+      d.className = "hit";
+      d.textContent = f.place_name;
+      d.onclick = () => saveAddress(f);
+      hits.appendChild(d);
+    });
+  } catch (e) { msg.textContent = "Search failed: " + e.message; }
+}
+document.getElementById("addrSearch").onclick = searchAddress;
+document.getElementById("addrQuery").addEventListener("keydown", e => { if (e.key === "Enter") searchAddress(); });
+
+allPlaces = [ME].concat(basePlaces);
+loadBasePlaces().then(loadSaved);
 
 let routes = [], delays = [], markers = [], active = 0;
 
@@ -121,8 +449,9 @@ function showCards(fastest, calmest) {
 
 async function showRoutes() {
   const msg = document.getElementById("msg");
-  const a = PLACES[fromSel.value], b = PLACES[toSel.value];
-  if (a === b) { msg.textContent = "Please pick two different places."; return; }
+  const a = fromCombo.place, b = toCombo.place;
+  if (!a || !b) { msg.textContent = "Pick both places from the list (start typing, then click a match)."; return; }
+  if (a[0] === b[0]) { msg.textContent = "Please pick two different places."; return; }
   msg.textContent = "Asking Mapbox...";
   document.getElementById("results").innerHTML = "";
 
